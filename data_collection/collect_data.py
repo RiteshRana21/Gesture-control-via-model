@@ -1,24 +1,3 @@
-"""
-=============================================================
-  GESTURE DATA COLLECTOR
-  Captures hand gesture images from webcam for training.
-=============================================================
-  GESTURES:
-    0 - idle         (no hand — point camera at empty desk)
-    1 - play_pause   (open palm — all 5 fingers spread wide)
-    2 - next_track   (two fingers — index + middle pointing UP)
-    3 - prev_track   (fist — all fingers fully curled closed)
-    4 - volume_up    (thumbs up — only thumb up, others curled)
-    5 - volume_down  (thumbs down — thumb pointing down)
-
-  USAGE:
-    python3 collect_data.py
-    Press [0-5] to select a gesture class
-    Press SPACE to start/stop capturing
-    Press Q to quit
-=============================================================
-"""
-
 import cv2
 import os
 import time

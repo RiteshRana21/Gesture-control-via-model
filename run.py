@@ -1,21 +1,3 @@
-"""
-=============================================================
-  REAL-TIME GESTURE -> SPOTIFY CONTROLLER
-  Pure MediaPipe landmark-based gesture detection. No CNN.
-=============================================================
-  GESTURES:
-    open palm    -> play / pause  (all 5 fingers spread open)
-    point right  -> next track    (only index finger up, pointing right)
-    point left   -> previous track(only index finger up, pointing left)
-    thumbs up    -> volume +10    (only thumb up, others curled)
-    thumbs down  -> volume -10    (only thumb down, others curled)
-
-  USAGE:
-    python3 run.py
-    Press Q to quit.
-=============================================================
-"""
-
 import os
 import sys
 import time
@@ -26,7 +8,7 @@ import ssl
 import cv2
 import numpy as np
 
-# ── MediaPipe ─────────────────────────────────────────────────────────────────
+# ── MediaPipe ──
 try:
     import mediapipe as mp
     from mediapipe.tasks import python as mp_python
@@ -59,7 +41,7 @@ except ImportError:
     print("[ERROR] mediapipe not installed. Run: pip3 install mediapipe")
     sys.exit(1)
 
-# ── Spotify ───────────────────────────────────────────────────────────────────
+# ── Spotify ──
 try:
     import spotipy
     from spotipy.oauth2 import SpotifyOAuth
@@ -67,7 +49,7 @@ except ImportError:
     print("[ERROR] spotipy not installed. Run: pip3 install spotipy")
     sys.exit(1)
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ── Config ────
 COOLDOWN_SEC  = 2.0
 SMOOTH_FRAMES = 10
 VOLUME_STEP   = 10
@@ -84,6 +66,7 @@ COLOURS = {
     "prev_track":   (0,   180, 255),
     "volume_up":    (0,   255, 200),
     "volume_down":  (200,  80, 255),
+    "shuffle":      (255, 100, 150),
 }
 
 CONNECTIONS = [
@@ -93,6 +76,83 @@ CONNECTIONS = [
     (9,13),(13,14),(14,15),(15,16),
     (13,17),(17,18),(18,19),(19,20),(0,17)
 ]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── OPTIONAL CNN CLASSIFIER ───────────────────────────────────────────────────
+# Everything CNN-related is in this block. If anything in here fails (torch not
+# installed, model file missing, checkpoint mismatch...), CNN is switched off
+# and the original rule-based classify_gesture() is used instead.
+# ══════════════════════════════════════════════════════════════════════════════
+USE_CNN        = True    # set to False to force the rule-based classifier
+CONF_THRESHOLD = 0.75    # CNN confidence below this -> "idle"
+CNN_PATH       = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "models", "gesture_cnn_best.pth")
+
+# Map your dataset folder names -> action names used in ACTIONS below.
+# Names not listed here are used as-is. Edit to match your dataset folders.
+CLASS_TO_ACTION = {
+    "palm":         "play_pause",
+    "open_palm":    "play_pause",
+    "point_right":  "next_track",
+    "point_left":   "prev_track",
+    "thumbs_up":    "volume_up",
+    "thumbs_down":  "volume_down",
+    "peace":        "shuffle",
+    "toggle_shuffle": "shuffle",
+}
+
+CNN = {"enabled": False, "model": None, "classes": [], "transform": None, "torch": None}
+
+if USE_CNN:
+    try:
+        import torch
+        from PIL import Image
+        from torchvision import transforms
+
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from models.gesture_cnn import GestureCNN
+
+        if not os.path.exists(CNN_PATH):
+            raise FileNotFoundError(f"model file not found: {CNN_PATH}")
+
+        _ckpt  = torch.load(CNN_PATH, map_location="cpu")
+        _model = GestureCNN(num_classes=len(_ckpt["class_names"]))
+        _model.load_state_dict(_ckpt["model_state"])
+        _model.eval()
+
+        CNN["model"]   = _model
+        CNN["classes"] = _ckpt["class_names"]
+        CNN["torch"]   = torch
+        CNN["Image"]   = Image
+        # Must match val_transform in train.py exactly
+        CNN["transform"] = transforms.Compose([
+            transforms.Resize((64, 64)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+        CNN["enabled"] = True
+        print(f"[CNN] Loaded ✓  classes: {CNN['classes']}")
+
+    except Exception as e:
+        print(f"[CNN] Not available ({type(e).__name__}: {e})")
+        print("[CNN] Falling back to rule-based gesture detection.")
+else:
+    print("[CNN] Disabled (USE_CNN = False). Using rule-based gesture detection.")
+
+
+def classify_cnn(roi_rgb):
+    """Return an action name from the CNN, or 'idle' if not confident."""
+    torch = CNN["torch"]
+    img   = CNN["Image"].fromarray(roi_rgb)
+    x     = CNN["transform"](img).unsqueeze(0)
+    with torch.no_grad():
+        probs = torch.softmax(CNN["model"](x), dim=1)[0]
+    conf, idx = probs.max(dim=0)
+    if conf.item() < CONF_THRESHOLD:
+        return "idle"
+    name = CNN["classes"][idx.item()]
+    return CLASS_TO_ACTION.get(name, name)
 
 
 # ── Spotify wrapper ───────────────────────────────────────────────────────────
@@ -151,8 +211,22 @@ class SpotifyController:
         except Exception as e:
             return f"[!] {e}"
 
+    def toggle_shuffle(self):
+        try:
+            state = self.sp.current_playback()
+            if state:
+                current = state.get("shuffle_state", False)
+                new_state = not current
+                self.sp.shuffle(new_state)
+                return f"Shuffle {'ON' if new_state else 'OFF'}"
+            else:
+                return "No active playback"
 
-# ── Landmark indices ──────────────────────────────────────────────────────────
+        except Exception as e:
+            return f"[!] {e}"
+
+
+# ── Landmark indices ───
 WRIST      = 0
 THUMB_MCP  = 2;  THUMB_IP   = 3;  THUMB_TIP  = 4
 INDEX_MCP  = 5;  INDEX_PIP  = 6;  INDEX_TIP  = 8
@@ -161,7 +235,7 @@ RING_PIP   = 14; RING_TIP   = 16
 PINKY_PIP  = 18; PINKY_TIP  = 20
 
 
-# ── Gesture classifier ────────────────────────────────────────────────────────
+# ── Gesture classifier (rule-based, unchanged) ────────────────────────────────
 def finger_up(lm, tip, pip):
     return lm[tip].y < lm[pip].y
 
@@ -188,6 +262,14 @@ def classify_gesture(lm):
     if thumb_down and fingers_curled and not thumb_up:
         return "volume_down"
 
+    # Peace sign -> shuffle
+    if index_up and middle_up and not ring_up and not pinky_up:
+        return "shuffle"
+
+    # NOTE: a plain fist (no thumb up/down) also triggers shuffle here.
+    if fingers_curled:
+        return "shuffle"
+
     # Index pointing -> next/prev
     if index_up and not middle_up and not ring_up and not pinky_up:
         diff = lm[INDEX_TIP].x - lm[WRIST].x
@@ -197,6 +279,26 @@ def classify_gesture(lm):
             return "prev_track"
 
     return "idle"
+
+
+# ── Gesture picker: CNN first, rules as fallback ──────────────────────────────
+def get_gesture(lm, roi_rgb):
+    """Use the CNN if it loaded and works; otherwise use classify_gesture().
+    If the CNN has no 'shuffle' class, the rules handle that one gesture."""
+    rule_gesture = classify_gesture(lm)
+    if CNN["enabled"]:
+        try:
+            cnn_gesture = classify_cnn(roi_rgb)
+            cnn_actions = [CLASS_TO_ACTION.get(c, c) for c in CNN["classes"]]
+            if rule_gesture == "shuffle" and "shuffle" not in cnn_actions:
+                return "shuffle"
+            return cnn_gesture
+        except Exception as e:
+            # CNN failed at runtime -> switch it off permanently, keep running
+            CNN["enabled"] = False
+            print(f"[CNN] Runtime error ({type(e).__name__}: {e}). "
+                  f"Switched to rule-based detection.")
+    return rule_gesture
 
 
 # ── Draw hand skeleton ────────────────────────────────────────────────────────
@@ -215,12 +317,15 @@ def run():
     from pathlib import Path
     env_path = Path(__file__).parent / ".env"
     if env_path.exists():
-        for line in env_path.read_text().splitlines():
+         for line in env_path.read_text().splitlines():
+            line = line.strip()
             if "=" in line and not line.startswith("#"):
                 k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
+                os.environ[k.strip()] = v.strip().strip('"').strip("'")
 
     try:
+        cid = os.getenv("SPOTIPY_CLIENT_ID") or ""
+        print(f"[Debug] client_id: {cid[:4]}...{cid[-4:]} (len={len(cid)})  secret len={len(os.getenv('SPOTIPY_CLIENT_SECRET') or '')}")
         spotify = SpotifyController()
         print("[Spotify] Connected ✓")
     except Exception as e:
@@ -242,6 +347,7 @@ def run():
         "prev_track":  lambda sp: sp.prev_track(),
         "volume_up":   lambda sp: sp.change_volume(+VOLUME_STEP),
         "volume_down": lambda sp: sp.change_volume(-VOLUME_STEP),
+        "shuffle":     lambda sp: sp.toggle_shuffle(),   # key renamed to match classifier output
     }
 
     HINTS = {
@@ -251,7 +357,16 @@ def run():
         "volume_up":   "thumbs up",
         "volume_down": "thumbs down",
         "idle":        "idle",
+        "shuffle":     "Two fingers up",
     }
+
+    # Warn about CNN classes that don't map to any action
+    if CNN["enabled"]:
+        for c in CNN["classes"]:
+            mapped = CLASS_TO_ACTION.get(c, c)
+            if mapped != "idle" and mapped not in ACTIONS:
+                print(f"[CNN] Warning: class '{c}' -> '{mapped}' has no action. "
+                      f"Add it to CLASS_TO_ACTION.")
 
     print("\n[Running] Press Q to quit.")
     print("open palm=play/pause | point right=next | point left=prev | thumbs up=vol+ | thumbs down=vol-\n")
@@ -286,7 +401,7 @@ def run():
             lm = mp_result.hand_landmarks[0]
             draw_landmarks(display, lm, x1, y1, x2, y2)
 
-            gesture = classify_gesture(lm)
+            gesture = get_gesture(lm, roi_rgb)      # CNN if available, else rules
             gesture_buffer.append(gesture)
             smooth_gesture = collections.Counter(gesture_buffer).most_common(1)[0][0]
 
@@ -316,6 +431,11 @@ def run():
             cv2.putText(display, status_msg, (10, h - 15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 180), 2)
 
+        # Which classifier is active
+        mode = "Mode: CNN" if CNN["enabled"] else "Mode: rules"
+        cv2.putText(display, mode, (w - 130, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
         # Legend
         legend = [
             ("open palm = play/pause",  COLOURS["play_pause"]),
@@ -323,6 +443,7 @@ def run():
             ("point left = prev",       COLOURS["prev_track"]),
             ("thumbs up = vol+",        COLOURS["volume_up"]),
             ("thumbs down = vol-",      COLOURS["volume_down"]),
+            ("Two fingers up = shuffle",COLOURS["shuffle"]),
         ]
         for i, (name, col) in enumerate(legend):
             cv2.circle(display, (12, 20 + i * 22), 6, col, -1)

@@ -1,17 +1,3 @@
-"""
-=============================================================
-  GESTURE CNN MODEL  —  built entirely from scratch with PyTorch
-=============================================================
-  Architecture: Custom lightweight CNN
-    Input  : 64×64 RGB image
-    Output : 6 gesture classes
-
-  Blocks:
-    ConvBlock × 4  (Conv → BN → ReLU → MaxPool → Dropout)
-    Classifier     (Flatten → FC → BN → ReLU → Dropout → FC)
-=============================================================
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

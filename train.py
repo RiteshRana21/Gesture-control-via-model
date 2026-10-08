@@ -1,18 +1,3 @@
-"""
-=============================================================
-  TRAINING PIPELINE
-  Trains GestureCNN from scratch on your collected dataset.
-=============================================================
-  USAGE:
-    python train.py
-
-  OUTPUT:
-    models/gesture_cnn_best.pth   — best validation checkpoint
-    models/gesture_cnn_final.pth  — final epoch checkpoint
-    models/training_history.json  — loss / accuracy per epoch
-=============================================================
-"""
-
 import os
 import sys
 import json
